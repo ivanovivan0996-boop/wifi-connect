@@ -31,6 +31,9 @@ android {
 }
 
 dependencies {
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.hierynomus:sshj:0.41.2")
+    implementation("eu.agno3.jcifs:jcifs-ng:2.1.10")
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.activity:activity-compose:1.10.0")
     implementation("androidx.compose.material3:material3")
