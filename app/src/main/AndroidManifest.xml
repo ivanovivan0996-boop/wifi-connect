@@ -6,7 +6,7 @@
     <application
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:label="WiFi Connect"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="true" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher">
         <activity
             android:name=".MainActivity"
             android:exported="true">
