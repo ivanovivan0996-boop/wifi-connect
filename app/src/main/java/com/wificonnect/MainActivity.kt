@@ -416,10 +416,14 @@ fun saveTrusted(context: Context, values: Set<String>) {
         .apply()
 }
 
+
 object NetworkScanner {
     private val ports = listOf(
-        22, 80, 443, 445, 554, 139,
-        3389, 5900, 8009, 8080, 8443
+        21, 22, 23, 53, 80, 81, 135, 139, 443, 445,
+        554, 515, 548, 631, 1900, 2869, 3689,
+        5000, 5001, 5357, 7000, 7001, 8008, 8009,
+        8080, 8081, 8443, 8888, 9000, 9100,
+        32400, 3389, 5900, 62078
     )
 
     fun scan(context: Context): List<Device> {
@@ -428,7 +432,8 @@ object NetworkScanner {
         ) as ConnectivityManager
 
         val network = cm.activeNetwork ?: return emptyList()
-        val capabilities = cm.getNetworkCapabilities(network) ?: return emptyList()
+        val capabilities = cm.getNetworkCapabilities(network)
+            ?: return emptyList()
 
         if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
             return emptyList()
@@ -441,7 +446,8 @@ object NetworkScanner {
 
         val local = address.address as Inet4Address
         val prefix = address.prefixLength
-        if (prefix !in 16..30) return emptyList()
+
+        if (prefix !in 1..30) return emptyList()
 
         val bytes = local.address.map { it.toInt() and 255 }
         val localInt =
@@ -451,17 +457,49 @@ object NetworkScanner {
 
         val mask = -1 shl (32 - prefix)
         val networkInt = localInt and mask
-        val count = (1 shl (32 - prefix)) - 2
+        val broadcastInt = networkInt or mask.inv()
+        val total = (broadcastInt.toLong() - networkInt.toLong() - 1)
+            .coerceAtLeast(0)
 
-        if (count !in 1..512) return emptyList()
+        // Ограничиваем объём одного сканирования,
+        // но не прекращаем поиск в сетях больше /23.
+        val maxHosts = 4094
+        val first: Int
+        val last: Int
 
-        val pool = Executors.newFixedThreadPool(40)
-        val found = Collections.synchronizedList(mutableListOf<Device>())
+        if (total <= maxHosts) {
+            first = networkInt + 1
+            last = broadcastInt - 1
+        } else {
+            first = (localInt - maxHosts / 2)
+                .coerceAtLeast(networkInt + 1)
+            last = (first.toLong() + maxHosts - 1)
+                .coerceAtMost((broadcastInt - 1).toLong()).toInt()
+        }
+
+        val found = java.util.concurrent.ConcurrentHashMap<String, Device>()
+        found[local.hostAddress ?: "127.0.0.1"] =
+            Device(local.hostAddress ?: "127.0.0.1", emptyList())
+
+        // Соседи, уже известные системе Android.
+        try {
+            java.io.File("/proc/net/arp").forEachLine { line ->
+                val parts = line.trim().split(Regex("\\s+"))
+                if (parts.size >= 4 &&
+                    parts[0].matches(Regex("\\d+\\.\\d+\\.\\d+\\.\\d+")) &&
+                    parts[3] != "00:00:00:00:00:00"
+                ) {
+                    found.putIfAbsent(parts[0], Device(parts[0], emptyList()))
+                }
+            }
+        } catch (_: Exception) {
+        }
+
+        val pool = Executors.newFixedThreadPool(80)
 
         try {
-            val tasks = (1..count).map { offset ->
+            val tasks = (first..last).map { target ->
                 pool.submit {
-                    val target = networkInt + offset
                     val ip = listOf(
                         (target ushr 24) and 255,
                         (target ushr 16) and 255,
@@ -471,18 +509,34 @@ object NetworkScanner {
 
                     if (ip == local.hostAddress) return@submit
 
-                    val open = ports.filter { port ->
-                        try {
-                            Socket().use { socket ->
-                                socket.connect(InetSocketAddress(ip, port), 220)
+                    val open = Collections.synchronizedList(
+                        mutableListOf<Int>()
+                    )
+
+                    val portPool = Executors.newFixedThreadPool(12)
+                    try {
+                        val checks = ports.map { port ->
+                            portPool.submit {
+                                try {
+                                    Socket().use { socket ->
+                                        socket.connect(
+                                            InetSocketAddress(ip, port),
+                                            350
+                                        )
+                                    }
+                                    open.add(port)
+                                } catch (_: Exception) {
+                                }
                             }
-                            true
-                        } catch (_: Exception) {
-                            false
                         }
+                        checks.forEach { it.get() }
+                    } finally {
+                        portPool.shutdownNow()
                     }
 
-                    if (open.isNotEmpty()) found.add(Device(ip, open))
+                    if (open.isNotEmpty()) {
+                        found[ip] = Device(ip, open.sorted())
+                    }
                 }
             }
 
@@ -491,6 +545,7 @@ object NetworkScanner {
             pool.shutdownNow()
         }
 
-        return found.sortedBy { it.ip }
+        return found.values.sortedBy { it.ip }
     }
 }
+
